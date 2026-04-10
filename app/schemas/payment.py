@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 class PaymentOrderRequest(BaseModel):
     amount_inr: int = 9
+    assessment_id: int
 
 
 class PaymentOrderResponse(BaseModel):
@@ -22,6 +23,7 @@ class PaymentVerifyResponse(BaseModel):
     paid: bool
     order_id: str
     payment_id: str
+    report_ready: bool = False
 
 
 class PaymentStatusResponse(BaseModel):

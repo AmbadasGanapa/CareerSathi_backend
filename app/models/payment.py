@@ -10,6 +10,7 @@ class Payment(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    assessment_id: Mapped[int | None] = mapped_column(ForeignKey("assessments.id"), nullable=True)
     order_id: Mapped[str] = mapped_column(String(120), index=True, unique=True)
     payment_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     signature: Mapped[str | None] = mapped_column(String(255), nullable=True)

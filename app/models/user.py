@@ -16,3 +16,4 @@ class User(Base):
 
     recommendations = relationship("Recommendation", back_populates="user")
     payments = relationship("Payment", back_populates="user")
+    assessments = relationship("Assessment", back_populates="user")

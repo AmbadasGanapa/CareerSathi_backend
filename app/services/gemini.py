@@ -1,4 +1,5 @@
 from app.core.config import get_settings
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 try:
     import google.generativeai as genai
@@ -47,8 +48,15 @@ def generate_recommendation(prompt: str) -> str:
             "response_mime_type": "application/json"
         }
     )
-    response = model.generate_content(prompt)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(model.generate_content, prompt)
+        try:
+            response = future.result(timeout=60)
+        except TimeoutError as exc:
+            raise RuntimeError("Recommendation generation timed out") from exc
     text = _extract_text(response)
     if not text:
         raise RuntimeError("Empty response from recommendation model")
     return text
+
+

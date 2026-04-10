@@ -30,5 +30,9 @@ class RecommendationResponse(BaseModel):
     recommendation: RecommendationResult
 
 
-class RecommendationGenerateResponse(BaseModel):
-    report_ready: bool = True
+class RecommendationSubmitResponse(BaseModel):
+    assessment_id: int
+
+
+class RecommendationStatusResponse(BaseModel):
+    status: str
