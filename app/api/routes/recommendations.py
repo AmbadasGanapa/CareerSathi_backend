@@ -104,7 +104,7 @@ Return ONLY valid JSON with keys:
 
 Rules:
 - If the student is in/after 10th, recommend streams/branches only (e.g., Science, Commerce, Arts/Humanities, Diploma/Polytechnic, ITI, Design & Media, Sports).
-- If the student is in/after 12th, recommend India-appropriate UG program tracks (e.g., Commerce & Management, IT & Computer Apps, Science (UG), Arts & Humanities, Design & Media, Law, Medical & Allied, Hospitality & Tourism).
+- If the student is in/after 12th, recommend India-appropriate UG program tracks (e.g., Commerce & Management, IT & Computer Applications, Science (UG), Arts & Humanities, Design & Media, Law, Medical & Allied, Hospitality & Tourism).
 - For 12th Commerce (without Maths/PCM), avoid Engineering and Medical recommendations.
 - Do NOT recommend full degree names like MBBS as a top-level branch name; use branch names and list degree examples in courses.
 - Each top_branches item must include:
