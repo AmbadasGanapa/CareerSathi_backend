@@ -66,8 +66,9 @@ def _generate_report_for_payment(assessment_id: int, user_id: int) -> None:
         payment_id = payment.payment_id if payment else "N/A"
         amount_text = f"{payment.amount / 100:.2f} {payment.currency}" if payment else "9.00 INR"
 
+        report_name = payload_data.name or user.name
         confirmation_body = (
-            f"Hi {user.name},\n\n"
+            f"Hi {report_name},\n\n"
             "Your payment was successful and your CareerSpark report is unlocked.\n\n"
             f"Order ID: {order_id}\n"
             f"Payment ID: {payment_id}\n"
@@ -76,12 +77,14 @@ def _generate_report_for_payment(assessment_id: int, user_id: int) -> None:
         )
         send_email(user.email, "Payment successful - CareerSpark", confirmation_body)
 
+
+
         top_branches = data.get("top_branches", [])
         branch_lines = []
         for idx, branch in enumerate(top_branches, start=1):
             branch_lines.append(f"{idx}. {branch.get('branch')} - {branch.get('why_fit')}")
         report_body = (
-            f"Hi {user.name},\n\n"
+            f"Hi {report_name},\n\n"
             "Here is your CareerSpark report summary:\n\n"
             f"Summary: {data.get('summary', 'N/A')}\n\n"
             "Top branches:\n"
@@ -90,7 +93,7 @@ def _generate_report_for_payment(assessment_id: int, user_id: int) -> None:
             + "\n".join([f"- {item}" for item in data.get("next_steps", [])])
             + "\n\nLog in to view the full report in your dashboard."
         )
-        pdf_bytes = build_report_pdf(data, user.name, user.email, assessment_id)
+        pdf_bytes = build_report_pdf(data, report_name, user.email, assessment_id)
         send_email(
             user.email,
             "Your CareerSpark report is ready",
@@ -174,7 +177,8 @@ def verify_payment(
     assessment.status = "processing"
     db.commit()
 
-    background_tasks.add_task(_generate_report_for_payment, assessment.id, current_user.id)
+    # background_tasks.add_task(_generate_report_for_payment, assessment.id, current_user.id)
+    _generate_report_for_payment(assessment.id, current_user.id)
 
     return PaymentVerifyResponse(
         paid=True,

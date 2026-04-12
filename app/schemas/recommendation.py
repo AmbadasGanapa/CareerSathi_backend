@@ -36,3 +36,16 @@ class RecommendationSubmitResponse(BaseModel):
 
 class RecommendationStatusResponse(BaseModel):
     status: str
+
+
+class AssessmentHistoryItem(BaseModel):
+    assessment_id: int
+    status: str
+    created_at: str
+    education_level: str | None = None
+    prior_stream: str | None = None
+    top_branches: list[str] = Field(default_factory=list)
+
+
+class RecommendationHistoryResponse(BaseModel):
+    items: list[AssessmentHistoryItem]

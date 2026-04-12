@@ -1,5 +1,6 @@
 from io import BytesIO
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 import hashlib
 
@@ -132,7 +133,7 @@ def build_report_pdf(report: dict, user_name: str, user_email: str, assessment_i
     flowables.append(Paragraph(f"Email: {_safe(user_email)}", meta_style))
     if assessment_id is not None:
         flowables.append(Paragraph(f"Assessment ID: {assessment_id}", meta_style))
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
     flowables.append(Paragraph(f"Generated: {now.month}/{now.day}/{now.year}, {now.strftime('%I:%M:%S %p')}", meta_style))
     flowables.append(Spacer(1, 0.16 * inch))
 

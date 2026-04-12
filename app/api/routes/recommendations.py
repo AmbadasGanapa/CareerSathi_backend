@@ -12,6 +12,8 @@ from app.models.user import User
 from app.schemas.recommendation import (
     RecommendationInput,
     RecommendationResponse,
+    RecommendationHistoryResponse,
+    AssessmentHistoryItem,
     RecommendationSubmitResponse,
     RecommendationStatusResponse,
 )
@@ -355,7 +357,8 @@ def _generate_report_for_assessment(assessment_id: int, user_id: int) -> None:
         assessment.status = "complete"
         db.commit()
 
-        pdf_bytes = build_report_pdf(data, user.name, user.email, assessment_id)
+        report_name = payload_data.name or user.name
+        pdf_bytes = build_report_pdf(data, report_name, user.email, assessment_id)
         summary_body = (
             f"Hi {user.name},\n\n"
             "Your CareerSpark report is ready. We've attached the PDF copy for you.\n\n"
@@ -444,7 +447,8 @@ def report_pdf(assessment_id: int, db: Session = Depends(get_db), current_user: 
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
 
-    pdf_bytes = build_report_pdf(rec.output_data, current_user.name, current_user.email, assessment_id)
+    report_name = rec.input_data.get("name") if isinstance(rec.input_data, dict) else current_user.name
+    pdf_bytes = build_report_pdf(rec.output_data, report_name or current_user.name, current_user.email, assessment_id)
     filename = f"careerspark-report-{assessment_id}.pdf"
     return StreamingResponse(
         iter([pdf_bytes]),
@@ -453,4 +457,38 @@ def report_pdf(assessment_id: int, db: Session = Depends(get_db), current_user: 
     )
 
 
+@router.get("/history", response_model=RecommendationHistoryResponse)
+def history(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    records = (
+        db.query(Assessment)
+        .filter(Assessment.user_id == current_user.id)
+        .order_by(Assessment.created_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    items: list[AssessmentHistoryItem] = []
+    for record in records:
+        top_branches: list[str] = []
+        if record.recommendation_id:
+            rec = db.get(Recommendation, record.recommendation_id)
+            if rec and isinstance(rec.output_data, dict):
+                for branch in rec.output_data.get("top_branches", [])[:3]:
+                    name = branch.get("branch")
+                    if name:
+                        top_branches.append(str(name))
+
+        input_data = record.input_data or {}
+        items.append(
+            AssessmentHistoryItem(
+                assessment_id=record.id,
+                status=record.status,
+                created_at=record.created_at.isoformat(),
+                education_level=input_data.get("education_level"),
+                prior_stream=input_data.get("prior_stream"),
+                top_branches=top_branches,
+            )
+        )
+
+    return RecommendationHistoryResponse(items=items)
 
