@@ -67,15 +67,16 @@ def _generate_report_for_payment(assessment_id: int, user_id: int) -> None:
         amount_text = f"{payment.amount / 100:.2f} {payment.currency}" if payment else "9.00 INR"
 
         report_name = payload_data.name or user.name
+        report_email = payload_data.email or user.email
         confirmation_body = (
             f"Hi {report_name},\n\n"
-            "Your payment was successful and your CareerSpark report is unlocked.\n\n"
+            "Your payment was successful and your A.GCareerSathi report is unlocked.\n\n"
             f"Order ID: {order_id}\n"
             f"Payment ID: {payment_id}\n"
             f"Amount: {amount_text}\n\n"
-            "Thank you for choosing CareerSpark!"
+            "Thank you for choosing A.GCareerSathi!"
         )
-        send_email(user.email, "Payment successful - CareerSpark", confirmation_body)
+        send_email(user.email, "Payment successful - A.GCareerSathi", confirmation_body)
 
 
 
@@ -85,7 +86,7 @@ def _generate_report_for_payment(assessment_id: int, user_id: int) -> None:
             branch_lines.append(f"{idx}. {branch.get('branch')} - {branch.get('why_fit')}")
         report_body = (
             f"Hi {report_name},\n\n"
-            "Here is your CareerSpark report summary:\n\n"
+            "Here is your A.GCareerSathi report summary:\n\n"
             f"Summary: {data.get('summary', 'N/A')}\n\n"
             "Top branches:\n"
             + "\n".join(branch_lines)
@@ -93,10 +94,10 @@ def _generate_report_for_payment(assessment_id: int, user_id: int) -> None:
             + "\n".join([f"- {item}" for item in data.get("next_steps", [])])
             + "\n\nLog in to view the full report in your dashboard."
         )
-        pdf_bytes = build_report_pdf(data, report_name, user.email, assessment_id)
+        pdf_bytes = build_report_pdf(data, report_name, report_email, assessment_id)
         send_email(
             user.email,
-            "Your CareerSpark report is ready",
+            "Your A.GCareerSathi report is ready",
             report_body,
             attachments=[("careerspark-report.pdf", pdf_bytes, "application/pdf")],
         )

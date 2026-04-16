@@ -8,6 +8,7 @@ class AssessmentAnswer(BaseModel):
 
 class RecommendationInput(BaseModel):
     name: str = Field(min_length=2, max_length=120)
+    email: str | None = None
     education_level: str
     prior_stream: str | None = None
     answers: dict[str, AssessmentAnswer]

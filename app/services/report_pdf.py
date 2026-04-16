@@ -43,7 +43,7 @@ def build_report_pdf(report: dict, user_name: str, user_email: str, assessment_i
         rightMargin=48,
         topMargin=48,
         bottomMargin=48,
-        title="CareerSpark Recommendation Report",
+        title="A.GCareerSathi Recommendation Report",
     )
 
     styles = getSampleStyleSheet()
@@ -98,7 +98,7 @@ def build_report_pdf(report: dict, user_name: str, user_email: str, assessment_i
     margin = 48
     flowables: list[Any] = []
     header = Table(
-        [[Paragraph("CareerSpark Recommendation Report", ParagraphStyle(
+        [[Paragraph("A.GCareerSathi Recommendation Report", ParagraphStyle(
             "HeaderTitle",
             parent=styles["Title"],
             fontSize=16,

@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[2] / ".env", env_file_encoding="utf-8", extra="ignore")
 
-    APP_NAME: str = "CareerSpark"
+    APP_NAME: str = "A.GCareerSathi"
     APP_ENV: str = "development"
 
     JWT_SECRET: str
@@ -27,11 +27,10 @@ class Settings(BaseSettings):
     EMAIL_USE_TLS: bool = True
     EMAIL_HOST_USER: str = ""
     EMAIL_HOST_PASSWORD: str = ""
-    EMAIL_FROM_NAME: str = "CareerSpark"
+    EMAIL_FROM_NAME: str = "A.GCareerSathi"
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
 

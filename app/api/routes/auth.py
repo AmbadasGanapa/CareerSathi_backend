@@ -29,14 +29,14 @@ def signup(payload: SignupRequest, background_tasks: BackgroundTasks, db: Sessio
 
     welcome_body = (
         f"Hi {user.name},\n\n"
-        "Welcome to CareerSpark!\n"
+        "Welcome to A.GCareerSathi!\n"
         "Your account is ready. Start your assessment to get personalized career recommendations.\n\n"
         "We are excited to have you with us."
     )
     background_tasks.add_task(
         send_email,
         user.email,
-        "Welcome to CareerSpark",
+        "Welcome to A.GCareerSathi",
         welcome_body,
     )
 

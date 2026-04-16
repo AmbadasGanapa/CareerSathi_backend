@@ -358,15 +358,16 @@ def _generate_report_for_assessment(assessment_id: int, user_id: int) -> None:
         db.commit()
 
         report_name = payload_data.name or user.name
-        pdf_bytes = build_report_pdf(data, report_name, user.email, assessment_id)
+        report_email = payload_data.email or user.email
+        pdf_bytes = build_report_pdf(data, report_name, report_email, assessment_id)
         summary_body = (
             f"Hi {user.name},\n\n"
-            "Your CareerSpark report is ready. We've attached the PDF copy for you.\n\n"
+            "Your A.GCareerSathi report is ready. We've attached the PDF copy for you.\n\n"
             "Log in to view the interactive report in your dashboard."
         )
         send_email(
             user.email,
-            "Your CareerSpark report is ready",
+            "Your A.GCareerSathi report is ready",
             summary_body,
             attachments=[("careerspark-report.pdf", pdf_bytes, "application/pdf")],
         )
@@ -448,7 +449,8 @@ def report_pdf(assessment_id: int, db: Session = Depends(get_db), current_user: 
         raise HTTPException(status_code=404, detail="Recommendation not found")
 
     report_name = rec.input_data.get("name") if isinstance(rec.input_data, dict) else current_user.name
-    pdf_bytes = build_report_pdf(rec.output_data, report_name or current_user.name, current_user.email, assessment_id)
+    report_email = rec.input_data.get("email") if isinstance(rec.input_data, dict) else current_user.email
+    pdf_bytes = build_report_pdf(rec.output_data, report_name or current_user.name, report_email or current_user.email, assessment_id)
     filename = f"careerspark-report-{assessment_id}.pdf"
     return StreamingResponse(
         iter([pdf_bytes]),
@@ -491,4 +493,3 @@ def history(db: Session = Depends(get_db), current_user: User = Depends(get_curr
         )
 
     return RecommendationHistoryResponse(items=items)
-
