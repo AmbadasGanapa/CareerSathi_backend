@@ -27,7 +27,7 @@ def on_startup():
 
 
 # Lightweight ping endpoint (for uptime monitoring)
-@app.get("/ping")
+@app.api_route("/ping", methods=["GET", "HEAD"])
 def ping():
     return {"status": "alive"}
 
