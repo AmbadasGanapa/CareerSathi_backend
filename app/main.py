@@ -26,6 +26,13 @@ def on_startup():
     Base.metadata.create_all(bind=engine)
 
 
+# Lightweight ping endpoint (for uptime monitoring)
+@app.get("/ping")
+def ping():
+    return {"status": "alive"}
+
+
+# (You can keep this for health/debug)
 @app.get("/health")
 def health():
     return {"status": "ok"}
