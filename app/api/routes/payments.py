@@ -165,6 +165,15 @@ def verify_payment(
     if not assessment or assessment.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Assessment not found")
 
+    if payment.status == "paid":
+        return PaymentVerifyResponse(
+            paid=True,
+            order_id=payment.order_id,
+            payment_id=payment.payment_id or payload.payment_id,
+            report_ready=assessment.status == "complete",
+            assessment_status=assessment.status,
+        )
+
     try:
         verify_signature(payload.order_id, payload.payment_id, payload.signature)
     except Exception:
@@ -175,17 +184,19 @@ def verify_payment(
     payment.status = "paid"
     payment.paid_at = datetime.utcnow()
 
-    assessment.status = "processing"
+    if assessment.status != "complete":
+        assessment.status = "processing"
     db.commit()
 
-    # background_tasks.add_task(_generate_report_for_payment, assessment.id, current_user.id)
-    _generate_report_for_payment(assessment.id, current_user.id)
+    if assessment.status == "processing":
+        background_tasks.add_task(_generate_report_for_payment, assessment.id, current_user.id)
 
     return PaymentVerifyResponse(
         paid=True,
         order_id=payment.order_id,
         payment_id=payment.payment_id,
-        report_ready=False,
+        report_ready=assessment.status == "complete",
+        assessment_status=assessment.status,
     )
 
 

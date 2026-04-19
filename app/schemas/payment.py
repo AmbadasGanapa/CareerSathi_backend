@@ -24,6 +24,7 @@ class PaymentVerifyResponse(BaseModel):
     order_id: str
     payment_id: str
     report_ready: bool = False
+    assessment_status: str | None = None
 
 
 class PaymentStatusResponse(BaseModel):
