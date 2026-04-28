@@ -1,28 +1,30 @@
 import json
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+import re
+from datetime import datetime
 
-from app.api.deps.auth import get_db, get_current_user
-from app.db.session import SessionLocal
-from app.models.assessment import Assessment
-from app.models.payment import Payment
-from app.models.recommendation import Recommendation
-from app.models.user import User
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from pymongo import DESCENDING
+from pymongo.database import Database
+
+from app.api.deps.auth import get_current_user, get_db
+from app.core.config import get_settings
+from app.db.mongo import get_database, get_next_id, to_public_document
 from app.schemas.recommendation import (
+    AssessmentHistoryItem,
+    RecommendationHistoryResponse,
     RecommendationInput,
     RecommendationResponse,
-    RecommendationHistoryResponse,
-    AssessmentHistoryItem,
-    RecommendationSubmitResponse,
     RecommendationStatusResponse,
+    RecommendationSubmitResponse,
 )
-from app.services.gemini import generate_recommendation
 from app.services.email import send_email
+from app.services.gemini import generate_recommendation
 from app.services.report_pdf import build_report_pdf
 
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
+settings = get_settings()
 
 OTHER_PREFIX = "other"
 
@@ -48,6 +50,70 @@ QUESTIONS = {
     "q19": "How do you learn best?",
     "q20": "How quickly do you adapt to new tools or concepts?"
 }
+
+
+def _candidate_data_dbs(primary_db: Database) -> list[Database]:
+    raw_aliases = [item.strip() for item in settings.MONGODB_DB_ALIASES.split(",") if item.strip()]
+    candidates = [primary_db.name, *raw_aliases, "agcareersathi", "CareerSathi", "careersathi"]
+    seen: set[str] = set()
+    result: list[Database] = []
+    for name in candidates:
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(primary_db.client[name])
+    return result
+
+
+def _user_ids_for_db(candidate_db: Database, current_user: dict) -> set[int]:
+    ids: set[int] = set()
+    if isinstance(current_user.get("id"), int):
+        ids.add(current_user["id"])
+
+    email = (current_user.get("email") or "").strip().lower()
+    if not email:
+        return ids
+
+    escaped = re.escape(email)
+    regex_filter = {"$regex": f"^{escaped}$", "$options": "i"}
+    matched = candidate_db["users"].find_one(
+        {
+            "$or": [
+                {"email": email},
+                {"email_lookup": email},
+                {"email_original": regex_filter},
+                {"email": regex_filter},
+            ]
+        }
+    )
+    if matched and isinstance(matched.get("id"), int):
+        ids.add(matched["id"])
+    return ids
+
+
+def _find_assessment_across_dbs(primary_db: Database, assessment_id: int, current_user: dict) -> tuple[dict | None, Database | None]:
+    for candidate_db in _candidate_data_dbs(primary_db):
+        user_ids = list(_user_ids_for_db(candidate_db, current_user))
+        if not user_ids:
+            continue
+        record = to_public_document(candidate_db["assessments"].find_one({"id": assessment_id, "user_id": {"$in": user_ids}}))
+        if record:
+            return record, candidate_db
+    return None, None
+
+
+def _find_recommendation_across_dbs(primary_db: Database, recommendation_id: int, preferred_db: Database | None = None) -> dict | None:
+    if preferred_db is not None:
+        rec = to_public_document(preferred_db["recommendations"].find_one({"id": recommendation_id}))
+        if rec:
+            return rec
+
+    for candidate_db in _candidate_data_dbs(primary_db):
+        rec = to_public_document(candidate_db["recommendations"].find_one({"id": recommendation_id}))
+        if rec:
+            return rec
+    return None
 
 
 def format_answer(answer) -> str:
@@ -86,7 +152,7 @@ def _parse_json_response(raw: str) -> dict:
         start = raw.find("{")
         end = raw.rfind("}")
         if start != -1 and end != -1 and end > start:
-            return json.loads(raw[start : end + 1])
+            return json.loads(raw[start: end + 1])
         raise
 
 
@@ -157,10 +223,8 @@ def _fallback_recommendation(payload: RecommendationInput) -> dict:
     has_pcm = any(k in text for k in ["pcm", "physics", "chemistry"]) and has_math
     has_bio = any(k in text for k in ["biology", "biotech", "botany", "zoology"])
     is_12th = "12" in education or "xii" in education or "class 12" in education
-    is_10th = "10" in education or "x" in education or "class 10" in education
     is_commerce = "commerce" in prior_stream or "commerce" in text
     is_science = "science" in prior_stream or "science" in text
-    is_arts = "arts" in prior_stream or "humanities" in prior_stream or "arts" in text or "humanities" in text
 
     library_10 = [
         {
@@ -268,10 +332,7 @@ def _fallback_recommendation(payload: RecommendationInput) -> dict:
 
     top = [item for score, item in scored if score > 0][:3]
     if len(top) < 3:
-        if is_12th:
-            defaults = ["Commerce & Management", "IT & Computer Apps", "Arts & Humanities"]
-        else:
-            defaults = ["Science", "Commerce", "Arts & Humanities"]
+        defaults = ["Commerce & Management", "IT & Computer Apps", "Arts & Humanities"] if is_12th else ["Science", "Commerce", "Arts & Humanities"]
         for name in defaults:
             if len(top) >= 3:
                 break
@@ -302,7 +363,7 @@ def _fallback_recommendation(payload: RecommendationInput) -> dict:
                 "Review the syllabus and choose core subjects",
                 "Build foundational skills with short courses",
                 "Explore entrance exams and eligibility",
-                "Create a study plan for the next 3 months"
+                "Create a study plan for the next 3 months",
             ],
             "outlook": "Positive growth with multiple specialization options.",
             "demand": "Steady demand in India across entry-level roles.",
@@ -317,13 +378,13 @@ def _fallback_recommendation(payload: RecommendationInput) -> dict:
             "Shortlist 2-3 colleges or programs",
             "Talk to a counselor or mentor",
             "Complete a skills mini-project",
-            "Review scholarship and exam dates"
+            "Review scholarship and exam dates",
         ],
         "scholarships": [
             "State merit scholarships",
             "National scholarship portal",
-            "Institute-specific entrance scholarships"
-        ]
+            "Institute-specific entrance scholarships",
+        ],
     }
 
 
@@ -338,119 +399,125 @@ def generate_recommendation_from_payload(payload: RecommendationInput) -> dict:
 
 
 def _generate_report_for_assessment(assessment_id: int, user_id: int) -> None:
-    db = SessionLocal()
-    assessment = None
+    db = get_database()
     try:
-        assessment = db.get(Assessment, assessment_id)
-        user = db.get(User, user_id)
+        assessment = to_public_document(db["assessments"].find_one({"id": assessment_id}))
+        user = to_public_document(db["users"].find_one({"id": user_id}))
         if not assessment or not user:
             return
 
-        payload_data = RecommendationInput(**assessment.input_data)
+        payload_data = RecommendationInput(**assessment["input_data"])
         data = generate_recommendation_from_payload(payload_data)
-        rec = Recommendation(user_id=user.id, input_data=assessment.input_data, output_data=data)
-        db.add(rec)
-        db.commit()
-        db.refresh(rec)
 
-        assessment.recommendation_id = rec.id
-        assessment.status = "complete"
-        db.commit()
+        recommendation = {
+            "id": get_next_id("recommendations", "recommendations"),
+            "user_id": user_id,
+            "input_data": assessment["input_data"],
+            "output_data": data,
+            "created_at": datetime.utcnow(),
+        }
+        db["recommendations"].insert_one(recommendation)
 
-        report_name = payload_data.name or user.name
-        report_email = payload_data.email or user.email
+        db["assessments"].update_one(
+            {"id": assessment_id},
+            {"$set": {"recommendation_id": recommendation["id"], "status": "complete"}},
+        )
+
+        report_name = payload_data.name or user["name"]
+        report_email = payload_data.email or user["email"]
         pdf_bytes = build_report_pdf(data, report_name, report_email, assessment_id)
         summary_body = (
-            f"Hi {user.name},\n\n"
+            f"Hi {user['name']},\n\n"
             "Your A.GCareerSathi report is ready. We've attached the PDF copy for you.\n\n"
             "Log in to view the interactive report in your dashboard."
         )
         send_email(
-            user.email,
+            user["email"],
             "Your A.GCareerSathi report is ready",
             summary_body,
             attachments=[("careerspark-report.pdf", pdf_bytes, "application/pdf")],
         )
     except Exception as exc:
-        if assessment:
-            assessment.status = "failed"
-            db.commit()
+        db["assessments"].update_one({"id": assessment_id}, {"$set": {"status": "failed"}})
         print(f"Recommendation generation failed for assessment {assessment_id}: {exc}")
-    finally:
-        db.close()
 
 
 @router.post("/submit", response_model=RecommendationSubmitResponse)
-def submit(payload: RecommendationInput, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    record = Assessment(user_id=current_user.id, input_data=payload.model_dump(), status="pending_payment")
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-    return RecommendationSubmitResponse(assessment_id=record.id)
+def submit(payload: RecommendationInput, db: Database = Depends(get_db), current_user=Depends(get_current_user)):
+    assessment = {
+        "id": get_next_id("assessments", "assessments"),
+        "user_id": current_user["id"],
+        "input_data": payload.model_dump(),
+        "status": "pending_payment",
+        "recommendation_id": None,
+        "created_at": datetime.utcnow(),
+    }
+    db["assessments"].insert_one(assessment)
+    return RecommendationSubmitResponse(assessment_id=assessment["id"])
 
 
 @router.get("/status/{assessment_id}", response_model=RecommendationStatusResponse)
-def status(assessment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    record = db.get(Assessment, assessment_id)
-    if not record or record.user_id != current_user.id:
+def status(assessment_id: int, db: Database = Depends(get_db), current_user=Depends(get_current_user)):
+    record, _ = _find_assessment_across_dbs(db, assessment_id, current_user)
+    if not record:
         raise HTTPException(status_code=404, detail="Assessment not found")
-    return RecommendationStatusResponse(status=record.status)
+    return RecommendationStatusResponse(status=record["status"])
 
 
 @router.post("/retry/{assessment_id}")
-def retry(assessment_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    record = db.get(Assessment, assessment_id)
-    if not record or record.user_id != current_user.id:
+def retry(assessment_id: int, background_tasks: BackgroundTasks, db: Database = Depends(get_db), current_user=Depends(get_current_user)):
+    record = to_public_document(db["assessments"].find_one({"id": assessment_id, "user_id": current_user["id"]}))
+    if not record:
         raise HTTPException(status_code=404, detail="Assessment not found")
 
-    paid = (
-        db.query(Payment)
-        .filter(Payment.assessment_id == assessment_id, Payment.user_id == current_user.id, Payment.status == "paid")
-        .order_by(Payment.paid_at.desc())
-        .first()
+    paid = to_public_document(
+        db["payments"].find_one(
+            {"assessment_id": assessment_id, "user_id": current_user["id"], "status": "paid"},
+            sort=[("paid_at", DESCENDING)],
+        )
     )
     if not paid:
         raise HTTPException(status_code=402, detail="Payment required")
 
-    record.status = "processing"
-    db.commit()
-
-    background_tasks.add_task(_generate_report_for_assessment, record.id, current_user.id)
+    db["assessments"].update_one({"id": assessment_id}, {"$set": {"status": "processing"}})
+    background_tasks.add_task(_generate_report_for_assessment, assessment_id, current_user["id"])
     return {"status": "processing"}
 
 
 @router.get("/result/{assessment_id}", response_model=RecommendationResponse)
-def result(assessment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    record = db.get(Assessment, assessment_id)
-    if not record or record.user_id != current_user.id:
+def result(assessment_id: int, db: Database = Depends(get_db), current_user=Depends(get_current_user)):
+    record, source_db = _find_assessment_across_dbs(db, assessment_id, current_user)
+    if not record:
         raise HTTPException(status_code=404, detail="Assessment not found")
 
-    if record.status != "complete" or not record.recommendation_id:
+    if record.get("status") != "complete" or not record.get("recommendation_id"):
         raise HTTPException(status_code=402, detail="Payment required")
 
-    rec = db.get(Recommendation, record.recommendation_id)
+    rec = _find_recommendation_across_dbs(db, record["recommendation_id"], source_db)
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
 
-    return RecommendationResponse(recommendation=rec.output_data)
+    output_data = _as_dict(rec.get("output_data"))
+    return RecommendationResponse(recommendation=output_data)
 
 
 @router.get("/report/{assessment_id}")
-def report_pdf(assessment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    record = db.get(Assessment, assessment_id)
-    if not record or record.user_id != current_user.id:
+def report_pdf(assessment_id: int, db: Database = Depends(get_db), current_user=Depends(get_current_user)):
+    record, source_db = _find_assessment_across_dbs(db, assessment_id, current_user)
+    if not record:
         raise HTTPException(status_code=404, detail="Assessment not found")
 
-    if record.status != "complete" or not record.recommendation_id:
+    if record.get("status") != "complete" or not record.get("recommendation_id"):
         raise HTTPException(status_code=402, detail="Payment required")
 
-    rec = db.get(Recommendation, record.recommendation_id)
+    rec = _find_recommendation_across_dbs(db, record["recommendation_id"], source_db)
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
 
-    report_name = rec.input_data.get("name") if isinstance(rec.input_data, dict) else current_user.name
-    report_email = rec.input_data.get("email") if isinstance(rec.input_data, dict) else current_user.email
-    pdf_bytes = build_report_pdf(rec.output_data, report_name or current_user.name, report_email or current_user.email, assessment_id)
+    input_data = _as_dict(rec.get("input_data"))
+    report_name = input_data.get("name") or current_user["name"]
+    report_email = input_data.get("email") or current_user["email"]
+    pdf_bytes = build_report_pdf(_as_dict(rec.get("output_data")), report_name, report_email, assessment_id)
     filename = f"careerspark-report-{assessment_id}.pdf"
     return StreamingResponse(
         iter([pdf_bytes]),
@@ -459,33 +526,79 @@ def report_pdf(assessment_id: int, db: Session = Depends(get_db), current_user: 
     )
 
 
+def _as_iso(value) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, str):
+        return value
+    return datetime.utcnow().isoformat()
+
+
+def _as_dict(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
 @router.get("/history", response_model=RecommendationHistoryResponse)
-def history(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    records = (
-        db.query(Assessment)
-        .filter(Assessment.user_id == current_user.id)
-        .order_by(Assessment.created_at.desc())
-        .limit(20)
-        .all()
-    )
+def history(db: Database = Depends(get_db), current_user=Depends(get_current_user)):
+    merged_records: list[tuple[dict, Database]] = []
+    for candidate_db in _candidate_data_dbs(db):
+        user_ids = list(_user_ids_for_db(candidate_db, current_user))
+        if not user_ids:
+            continue
+        cursor = (
+            candidate_db["assessments"]
+            .find({"user_id": {"$in": user_ids}})
+            .sort("created_at", DESCENDING)
+            .limit(30)
+        )
+        for raw in cursor:
+            record = to_public_document(raw)
+            if record:
+                merged_records.append((record, candidate_db))
+
+    def _sort_key(item: tuple[dict, Database]) -> str:
+        value = item[0].get("created_at")
+        return _as_iso(value)
+
+    merged_records.sort(key=_sort_key, reverse=True)
 
     items: list[AssessmentHistoryItem] = []
-    for record in records:
+    seen_ids: set[int] = set()
+    for record, source_db in merged_records:
+        if len(items) >= 20:
+            break
+        assessment_id = record.get("id")
+        if isinstance(assessment_id, int):
+            if assessment_id in seen_ids:
+                continue
+            seen_ids.add(assessment_id)
+        record = record or {}
         top_branches: list[str] = []
-        if record.recommendation_id:
-            rec = db.get(Recommendation, record.recommendation_id)
-            if rec and isinstance(rec.output_data, dict):
-                for branch in rec.output_data.get("top_branches", [])[:3]:
+        rec_id = record.get("recommendation_id")
+        if rec_id:
+            rec = _find_recommendation_across_dbs(db, rec_id, source_db)
+            output_data = _as_dict(rec.get("output_data")) if rec else {}
+            if isinstance(output_data, dict):
+                for branch in output_data.get("top_branches", [])[:3]:
                     name = branch.get("branch")
                     if name:
                         top_branches.append(str(name))
 
-        input_data = record.input_data or {}
+        input_data = _as_dict(record.get("input_data"))
         items.append(
             AssessmentHistoryItem(
-                assessment_id=record.id,
-                status=record.status,
-                created_at=record.created_at.isoformat(),
+                assessment_id=record.get("id", 0),
+                status=record.get("status", "pending_payment"),
+                created_at=_as_iso(record.get("created_at")),
                 education_level=input_data.get("education_level"),
                 prior_stream=input_data.get("prior_stream"),
                 top_branches=top_branches,

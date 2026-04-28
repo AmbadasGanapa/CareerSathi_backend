@@ -32,6 +32,33 @@ def _extract_text(response) -> str:
     return ""
 
 
+def generate_text_response(prompt: str, temperature: float = 0.3, timeout_seconds: int = 45) -> str:
+    if not settings.GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+    if genai is None:
+        raise RuntimeError("google-generativeai is not installed")
+
+    genai.configure(api_key=settings.GEMINI_API_KEY)
+    model_name = _normalize_model_name(settings.GEMINI_MODEL)
+
+    model = genai.GenerativeModel(
+        model_name,
+        generation_config={
+            "temperature": temperature,
+        }
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(model.generate_content, prompt)
+        try:
+            response = future.result(timeout=timeout_seconds)
+        except TimeoutError as exc:
+            raise RuntimeError("Model response timed out") from exc
+    text = _extract_text(response)
+    if not text:
+        raise RuntimeError("Empty response from model")
+    return text
+
+
 def generate_recommendation(prompt: str) -> str:
     if not settings.GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured")

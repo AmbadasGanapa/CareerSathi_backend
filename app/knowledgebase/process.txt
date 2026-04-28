@@ -1,0 +1,8 @@
+A.GCareerSathi Process
+
+Step 1: Student signs in and submits assessment answers.
+Step 2: System stores assessment and waits for payment unlock when applicable.
+Step 3: Recommendation engine generates branch-wise guidance.
+Step 4: Student can view results, report PDF, and history in dashboard.
+
+If processing fails, retry is available from results/dashboard.

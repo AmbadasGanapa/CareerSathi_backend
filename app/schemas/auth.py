@@ -15,12 +15,14 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    role: str = "user"
 
 
 class UserPublic(BaseModel):
     id: int
     name: str
     email: EmailStr
+    role: str = "user"
 
     class Config:
         from_attributes = True

@@ -1,73 +1,75 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from sqlalchemy.orm import Session
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pymongo import DESCENDING
+from pymongo.database import Database
 
 from app.api.deps.auth import get_current_user, get_db
+from app.api.routes.recommendations import generate_recommendation_from_payload
 from app.core.config import get_settings
-from app.db.session import SessionLocal
-from app.models.assessment import Assessment
-from app.models.payment import Payment
-from app.models.recommendation import Recommendation
-from app.models.user import User
+from app.db.mongo import get_database, get_next_id, to_public_document
 from app.schemas.payment import (
     PaymentOrderRequest,
     PaymentOrderResponse,
+    PaymentStatusResponse,
     PaymentVerifyRequest,
     PaymentVerifyResponse,
-    PaymentStatusResponse,
 )
 from app.schemas.recommendation import RecommendationInput
-from app.services.razorpay import create_order, verify_signature
 from app.services.email import send_email
+from app.services.razorpay import create_order, verify_signature
 from app.services.report_pdf import build_report_pdf
-from app.api.routes.recommendations import generate_recommendation_from_payload
 
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 settings = get_settings()
 
 
-def _latest_paid_payment(db: Session, user_id: int) -> Payment | None:
-    return (
-        db.query(Payment)
-        .filter(Payment.user_id == user_id, Payment.status == "paid")
-        .order_by(Payment.paid_at.desc())
-        .first()
+def _latest_paid_payment(db: Database, user_id: int) -> dict | None:
+    return to_public_document(
+        db["payments"].find_one(
+            {"user_id": user_id, "status": "paid"},
+            sort=[("paid_at", DESCENDING)],
+        )
     )
 
 
 def _generate_report_for_payment(assessment_id: int, user_id: int) -> None:
-    db = SessionLocal()
-    assessment = None
+    db = get_database()
     try:
-        assessment = db.get(Assessment, assessment_id)
-        user = db.get(User, user_id)
+        assessment = to_public_document(db["assessments"].find_one({"id": assessment_id}))
+        user = to_public_document(db["users"].find_one({"id": user_id}))
         if not assessment or not user:
             return
 
-        payload_data = RecommendationInput(**assessment.input_data)
+        payload_data = RecommendationInput(**assessment["input_data"])
         data = generate_recommendation_from_payload(payload_data)
-        rec = Recommendation(user_id=user.id, input_data=assessment.input_data, output_data=data)
-        db.add(rec)
-        db.commit()
-        db.refresh(rec)
 
-        assessment.recommendation_id = rec.id
-        assessment.status = "complete"
-        db.commit()
-
-        payment = (
-            db.query(Payment)
-            .filter(Payment.assessment_id == assessment_id, Payment.user_id == user_id)
-            .order_by(Payment.created_at.desc())
-            .first()
+        rec = {
+            "id": get_next_id("recommendations", "recommendations"),
+            "user_id": user_id,
+            "input_data": assessment["input_data"],
+            "output_data": data,
+            "created_at": datetime.utcnow(),
+        }
+        db["recommendations"].insert_one(rec)
+        db["assessments"].update_one(
+            {"id": assessment_id},
+            {"$set": {"recommendation_id": rec["id"], "status": "complete"}},
         )
-        order_id = payment.order_id if payment else "N/A"
-        payment_id = payment.payment_id if payment else "N/A"
-        amount_text = f"{payment.amount / 100:.2f} {payment.currency}" if payment else "9.00 INR"
 
-        report_name = payload_data.name or user.name
-        report_email = payload_data.email or user.email
+        payment = to_public_document(
+            db["payments"].find_one(
+                {"assessment_id": assessment_id, "user_id": user_id},
+                sort=[("created_at", DESCENDING)],
+            )
+        )
+        order_id = payment.get("order_id") if payment else "N/A"
+        payment_id = payment.get("payment_id") if payment else "N/A"
+        amount_text = f"{payment.get('amount', 9):.2f} {payment.get('currency', 'INR')}" if payment else "9.00 INR"
+
+        report_name = payload_data.name or user["name"]
+        report_email = payload_data.email or user["email"]
         confirmation_body = (
             f"Hi {report_name},\n\n"
             "Your payment was successful and your A.GCareerSathi report is unlocked.\n\n"
@@ -76,9 +78,7 @@ def _generate_report_for_payment(assessment_id: int, user_id: int) -> None:
             f"Amount: {amount_text}\n\n"
             "Thank you for choosing A.GCareerSathi!"
         )
-        send_email(user.email, "Payment successful - A.GCareerSathi", confirmation_body)
-
-
+        send_email(user["email"], "Payment successful - A.GCareerSathi", confirmation_body)
 
         top_branches = data.get("top_branches", [])
         branch_lines = []
@@ -96,30 +96,26 @@ def _generate_report_for_payment(assessment_id: int, user_id: int) -> None:
         )
         pdf_bytes = build_report_pdf(data, report_name, report_email, assessment_id)
         send_email(
-            user.email,
+            user["email"],
             "Your A.GCareerSathi report is ready",
             report_body,
             attachments=[("careerspark-report.pdf", pdf_bytes, "application/pdf")],
         )
     except Exception as exc:
-        if assessment:
-            assessment.status = "failed"
-            db.commit()
+        db["assessments"].update_one({"id": assessment_id}, {"$set": {"status": "failed"}})
         print(f"Report generation failed for assessment {assessment_id}: {exc}")
-    finally:
-        db.close()
 
 
 @router.post("/order", response_model=PaymentOrderResponse)
 def create_payment_order(
     payload: PaymentOrderRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: Database = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
-    assessment = db.get(Assessment, payload.assessment_id)
-    if not assessment or assessment.user_id != current_user.id:
+    assessment = to_public_document(db["assessments"].find_one({"id": payload.assessment_id}))
+    if not assessment or assessment.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=404, detail="Assessment not found")
-    if assessment.status != "pending_payment":
+    if assessment.get("status") != "pending_payment":
         raise HTTPException(status_code=400, detail="Assessment already processed")
 
     try:
@@ -127,16 +123,21 @@ def create_payment_order(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-    record = Payment(
-        user_id=current_user.id,
-        assessment_id=assessment.id,
-        order_id=order["id"],
-        amount=order["amount"],
-        currency=order.get("currency", "INR"),
-        status="created",
-    )
-    db.add(record)
-    db.commit()
+    record = {
+        "id": get_next_id("payments", "payments"),
+        "user_id": current_user["id"],
+        "assessment_id": assessment["id"],
+        "order_id": order["id"],
+        "amount": int(payload.amount_inr),
+        "amount_paise": int(order["amount"]),
+        "currency": order.get("currency", "INR"),
+        "status": "created",
+        "payment_id": None,
+        "signature": None,
+        "created_at": datetime.utcnow(),
+        "paid_at": None,
+    }
+    db["payments"].insert_one(record)
 
     return PaymentOrderResponse(
         order_id=order["id"],
@@ -150,28 +151,24 @@ def create_payment_order(
 def verify_payment(
     payload: PaymentVerifyRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: Database = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
-    payment = (
-        db.query(Payment)
-        .filter(Payment.order_id == payload.order_id, Payment.user_id == current_user.id)
-        .first()
-    )
+    payment = to_public_document(db["payments"].find_one({"order_id": payload.order_id, "user_id": current_user["id"]}))
     if not payment:
         raise HTTPException(status_code=404, detail="Payment order not found")
 
-    assessment = db.get(Assessment, payment.assessment_id) if payment.assessment_id else None
-    if not assessment or assessment.user_id != current_user.id:
+    assessment = to_public_document(db["assessments"].find_one({"id": payment.get("assessment_id")})) if payment.get("assessment_id") else None
+    if not assessment or assessment.get("user_id") != current_user["id"]:
         raise HTTPException(status_code=404, detail="Assessment not found")
 
-    if payment.status == "paid":
+    if payment.get("status") == "paid":
         return PaymentVerifyResponse(
             paid=True,
-            order_id=payment.order_id,
-            payment_id=payment.payment_id or payload.payment_id,
-            report_ready=assessment.status == "complete",
-            assessment_status=assessment.status,
+            order_id=payment["order_id"],
+            payment_id=payment.get("payment_id") or payload.payment_id,
+            report_ready=assessment.get("status") == "complete",
+            assessment_status=assessment.get("status"),
         )
 
     try:
@@ -179,39 +176,48 @@ def verify_payment(
     except Exception:
         raise HTTPException(status_code=400, detail="Payment verification failed")
 
-    payment.payment_id = payload.payment_id
-    payment.signature = payload.signature
-    payment.status = "paid"
-    payment.paid_at = datetime.utcnow()
+    db["payments"].update_one(
+        {"id": payment["id"]},
+        {
+            "$set": {
+                "payment_id": payload.payment_id,
+                "signature": payload.signature,
+                "status": "paid",
+                "paid_at": datetime.utcnow(),
+            }
+        },
+    )
 
-    if assessment.status != "complete":
-        assessment.status = "processing"
-    db.commit()
+    latest_assessment = to_public_document(db["assessments"].find_one({"id": assessment["id"]}))
+    if latest_assessment and latest_assessment.get("status") != "complete":
+        db["assessments"].update_one({"id": assessment["id"]}, {"$set": {"status": "processing"}})
 
-    if assessment.status == "processing":
-        background_tasks.add_task(_generate_report_for_payment, assessment.id, current_user.id)
+    refreshed = to_public_document(db["assessments"].find_one({"id": assessment["id"]}))
+    if refreshed and refreshed.get("status") == "processing":
+        background_tasks.add_task(_generate_report_for_payment, assessment["id"], current_user["id"])
 
     return PaymentVerifyResponse(
         paid=True,
-        order_id=payment.order_id,
-        payment_id=payment.payment_id,
-        report_ready=assessment.status == "complete",
-        assessment_status=assessment.status,
+        order_id=payment["order_id"],
+        payment_id=payload.payment_id,
+        report_ready=refreshed.get("status") == "complete" if refreshed else False,
+        assessment_status=refreshed.get("status") if refreshed else None,
     )
 
 
 @router.get("/status", response_model=PaymentStatusResponse)
 def payment_status(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: Database = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
-    paid = _latest_paid_payment(db, current_user.id)
+    paid = _latest_paid_payment(db, current_user["id"])
     if not paid:
         return PaymentStatusResponse(paid=False)
 
+    paid_at = paid.get("paid_at")
     return PaymentStatusResponse(
         paid=True,
-        order_id=paid.order_id,
-        payment_id=paid.payment_id,
-        paid_at=paid.paid_at.isoformat() if paid.paid_at else None,
+        order_id=paid.get("order_id"),
+        payment_id=paid.get("payment_id"),
+        paid_at=paid_at.isoformat() if isinstance(paid_at, datetime) else str(paid_at) if paid_at else None,
     )

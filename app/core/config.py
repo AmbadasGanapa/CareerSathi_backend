@@ -13,8 +13,12 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
 
-    DATABASE_URL: str
+    DATABASE_URL: str = ""
+    MONGODB_URL: str = ""
+    MONGODB_DB_NAME: str = "agcareersathi"
+    MONGODB_DB_ALIASES: str = ""
     FRONTEND_ORIGIN: str = "https://agcareersathi.vercel.app"
+    FRONTEND_ORIGINS: str = ""
 
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-1.5-flash"
@@ -29,8 +33,12 @@ class Settings(BaseSettings):
     EMAIL_HOST_PASSWORD: str = ""
     EMAIL_FROM_NAME: str = "A.GCareerSathi"
 
+    SERPAPI_API_KEY: str = ""
+    ADMIN_API_KEY: str = ""
+    ADMIN_EMAIL: str = ""
+    ADMIN_PASSWORD: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
