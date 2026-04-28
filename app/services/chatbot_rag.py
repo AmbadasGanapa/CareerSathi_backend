@@ -49,6 +49,21 @@ def _token_set(text: str) -> set[str]:
     return {t for t in _normalize_text(text).split() if len(t) > 1}
 
 
+def _compact_answer(text: str, max_sentences: int = 2, max_chars: int = 260) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "")).strip()
+    if not cleaned:
+        return "I could not generate a response right now. Please try again."
+
+    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    compact = " ".join([part.strip() for part in parts if part.strip()][:max_sentences]).strip()
+    if not compact:
+        compact = cleaned
+
+    if len(compact) > max_chars:
+        compact = compact[: max_chars - 3].rstrip(" ,;:") + "..."
+    return compact
+
+
 def _is_mutation_intent(question: str) -> bool:
     text = _normalize_text(question)
     destructive_terms = [
@@ -60,27 +75,30 @@ def _is_mutation_intent(question: str) -> bool:
 
 def _is_account_query(question: str) -> bool:
     text = _normalize_text(question)
-    if "my report" in text or "my status" in text or "my history" in text:
+    if "my report" in text or "my status" in text or "my history" in text or "my account" in text:
         return True
     triggers = [
         "my ", "attempt", "payment", "order id", "payment id", "recommended", "dashboard",
-        "course for me", "branch for me",
+        "course for me", "branch for me", "account activity", "a c activity",
     ]
     return any(t in text for t in triggers)
 
 
 def _quick_account_answer(question: str, user_context: dict[str, Any] | None) -> str | None:
-    if not user_context:
-        return None
     text = _normalize_text(question)
+
+    if not user_context:
+        if "payment" in text or "order id" in text or "payment id" in text or "account" in text or "history" in text:
+            return "Please sign in to view your account activity."
+        return None
 
     if "latest payment id" in text or ("payment id" in text and "latest" in text):
         pid = user_context.get("latest_payment_id")
-        return f"Your latest payment ID is {pid}." if pid else "I could not find a latest payment ID for your account yet."
+        return f"Your latest payment ID is {pid}." if pid else "I could not find your latest payment ID yet."
 
     if "latest order id" in text or ("order id" in text and "latest" in text):
         oid = user_context.get("latest_order_id")
-        return f"Your latest order ID is {oid}." if oid else "I could not find a latest order ID for your account yet."
+        return f"Your latest order ID is {oid}." if oid else "I could not find your latest order ID yet."
 
     if "how many" in text and ("attempt" in text or "test" in text):
         count = user_context.get("attempt_count", 0)
@@ -89,29 +107,72 @@ def _quick_account_answer(question: str, user_context: dict[str, Any] | None) ->
     if "most recommended course" in text or ("recommended course" in text and "me" in text):
         course = user_context.get("most_recommended_course")
         return (
-            f"Based on your recommendation history, your most recommended course/specialization is: {course}."
-            if course
-            else "I could not find enough recommendation history to determine your most recommended course yet."
+            f"Your most recommended course is {course}." if course else "I could not determine your most recommended course yet."
         )
 
     if "most recommended branch" in text or ("recommended branch" in text and "me" in text):
         branch = user_context.get("most_recommended_branch")
         return (
-            f"Based on your recommendation history, your most recommended branch is: {branch}."
-            if branch
-            else "I could not find enough recommendation history to determine your most recommended branch yet."
+            f"Your most recommended branch is {branch}." if branch else "I could not determine your most recommended branch yet."
         )
+
+    if "account activity" in text or "my account" in text or "my history" in text:
+        latest_status = user_context.get("status_counts", {})
+        latest_payment_id = user_context.get("latest_payment_id")
+        attempt_count = user_context.get("attempt_count", 0)
+        pieces = [f"You have attempted the assessment {attempt_count} time{'s' if attempt_count != 1 else ''}."]
+        if latest_payment_id:
+            pieces.append(f"Your latest payment ID is {latest_payment_id}.")
+        if latest_status:
+            pieces.append(f"Assessment status summary: {latest_status}.")
+        return _compact_answer(" ".join(pieces))
 
     return None
 
 
 def _quick_static_answer(question: str, docs: list["Document"]) -> str | None:
     text = _normalize_text(question)
+    if "privacy" in text or "privacy policy" in text or "data safe" in text or "data privacy" in text:
+        return _compact_answer(
+            "Your data is used only for recommendation personalization and should be handled securely. "
+            "For complete legal details, please refer to the Privacy Policy page."
+        )
+
+    if "refund" in text or "refund policy" in text:
+        return _compact_answer(
+            "Refunds are handled according to the published Refund Policy and payment verification status. "
+            "Please check the Refund Policy page for full terms."
+        )
+
+    if "terms" in text or "terms and conditions" in text:
+        return _compact_answer(
+            "Please refer to the Terms and Conditions page for the complete rules, usage terms, and legal details."
+        )
+
+    if "how it works" in text or "how does it work" in text or "process" in text:
+        return _compact_answer(
+            "A.GCareerSathi works in 3 steps: answer the assessment, get AI-based career recommendations, "
+            "and unlock your detailed report with guidance on branches, careers, and next steps."
+        )
+
+    if "account policy" in text or "policy notes" in text:
+        return _compact_answer(
+            "Account activity includes assessment attempts, recommendation trends, and payment status. "
+            "Your data is used only for personalization and should be handled securely. "
+            "For legal details, please refer to the Terms, Privacy Policy, and Refund Policy pages."
+        )
+
+    if "about" in text:
+        return _compact_answer(
+            "A.GCareerSathi helps Class 10, Class 12, and Diploma students explore suitable career paths. "
+            "It also offers mentoring, resume review, career workshops, online identity guidance, study planning, and future skills support."
+        )
+
     if not docs:
         return None
 
-    # Prioritize very common policy/process FAQ intents with direct retrieval summary.
-    quick_topics = ["refund", "privacy", "terms", "how it works", "process", "faq", "price", "payment", "report", "about"]
+    # Prioritize very common FAQ intents with direct retrieval summary.
+    quick_topics = ["faq", "price", "payment", "report", "about"]
     if not any(topic in text for topic in quick_topics):
         return None
 
@@ -127,7 +188,7 @@ def _quick_static_answer(question: str, docs: list["Document"]) -> str | None:
         snippets.append(short)
     if not snippets:
         return None
-    return "\n\n".join(snippets)
+    return _compact_answer(" ".join(snippets))
 
 
 def _as_dict(value: Any) -> dict:
@@ -193,11 +254,14 @@ def _build_vector_store():
     if not split_docs:
         return None
 
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
-        google_api_key=settings.GEMINI_API_KEY,
-    )
-    return FAISS.from_documents(split_docs, embeddings)
+    try:
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/text-embedding-004",
+            google_api_key=settings.GEMINI_API_KEY,
+        )
+        return FAISS.from_documents(split_docs, embeddings)
+    except Exception:
+        return None
 
 
 def _get_vector_store():
@@ -453,7 +517,10 @@ Rules:
 - For account questions, prioritize account_activity facts (attempt count, recommendations, payment/report status).
 - You are read-only: never claim data was changed, deleted, or updated.
 - If info is missing, say what is missing and suggest the next step.
-- Keep answer concise.
+- Keep the answer very short.
+- Use at most 2 sentences.
+- Do not add extra explanation unless the user asks for it.
+- Answer only the exact question asked.
 
 Question:
 {question}
@@ -469,9 +536,10 @@ Context:
         prompt_text = f"Question: {question.strip()}\n\nContext:\n{context_text}"
 
     try:
-        answer = generate_text_response(prompt_text, temperature=0.2, timeout_seconds=18).strip()
+        answer = _compact_answer(generate_text_response(prompt_text, temperature=0.2, timeout_seconds=18).strip())
     except Exception as exc:
-        answer = f"I could not generate an AI response right now ({exc}). Based on available data: {context_text[:600]}"
+        fallback = _quick_account_answer(question, user_context) if is_account_query else _quick_static_answer(question, static_docs)
+        answer = _compact_answer(fallback or "I could not generate a response right now. Please try again.")
 
     sources: list[str] = []
     for d in docs:
@@ -480,7 +548,7 @@ Context:
             sources.append(src)
 
     return {
-        "answer": answer or "I could not generate a response right now. Please try again.",
+        "answer": _compact_answer(answer),
         "sources": sources[:6],
         "used_account_context": user_context is not None,
     }
